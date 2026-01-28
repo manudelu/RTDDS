@@ -1,27 +1,21 @@
 #pragma once
-#include <string>
-#include <vector>
-#include <stdexcept>
 
+#include <cstddef>
+
+template <size_t MAX_DOFS>
 struct RobotModel
 {
-    std::vector<std::string> joint_names;
-    std::vector<double> joint_min;
-    std::vector<double> joint_max;
-    std::vector<double> home_position;
+    static constexpr size_t dofs = MAX_DOFS;
 
-    size_t dofs() const { return joint_names.size(); }
-
-    void validate() const
-    {
-        if (joint_names.size() != joint_min.size() ||
-            joint_names.size() != joint_max.size() ||
-            joint_names.size() != home_position.size())
-            throw std::runtime_error("RobotModel: size mismatch");
-    }
+    const char* joint_names[MAX_DOFS];
+    double joint_min[MAX_DOFS];
+    double joint_max[MAX_DOFS];
+    double home_position[MAX_DOFS];
 };
 
-RobotModel robot {
+// Spot Config 12 Joints
+using SpotRobot = RobotModel<12>;
+constexpr SpotRobot spot {
     .joint_names = {
         "front_left_hip_x",  "front_left_hip_y",  "front_left_knee",
         "front_right_hip_x", "front_right_hip_y", "front_right_knee",
@@ -47,5 +41,3 @@ RobotModel robot {
         0.0, 0.0, -1.5253125
     }
 };
-
-std::vector<double> end_pos { 0.0, 0.4, -0.5, 0.0, 0.5, -0.4, 0.0, 0.4, -0.5, 0.0, 0.5, -0.4 };

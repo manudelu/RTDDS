@@ -32,6 +32,29 @@ void sigint_handler(int)
     running = false;
 }
 
+int open_xddp_device(const char* device_path) {
+    int xddp_fd = -1;
+    std::cout << "Waiting for Xenomai RT server..." << std::endl;
+
+    while (running) {
+        xddp_fd = open(device_path, O_RDONLY);
+        if (xddp_fd >= 0) break;
+
+        if (errno == ENOENT) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        } else if (errno != EINTR) {
+            std::cerr << "Failed to open XDDP device: " << strerror(errno) << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(1)); 
+        }
+    }
+
+    if (xddp_fd >= 0) {
+        std::cout << "Connected to XDDP device!" << std::endl;
+    }
+
+    return xddp_fd;
+}
+
 class JointStatePublisher
 {
 private:
@@ -49,7 +72,7 @@ private:
 
     public:
         PubListener() : matched_{0} {}
-        ~PubListener() override {}
+        ~PubListener() override = default;
 
         void on_publication_matched(DataWriter* writer, const PublicationMatchedStatus& info) override
         {
@@ -88,7 +111,6 @@ private:
             DomainParticipantFactory::get_instance()->delete_participant(participant_);
             participant_ = nullptr;
         }
-        std::cout << "Publisher cleanup completed." << std::endl;
     }
 
 public:
@@ -104,13 +126,14 @@ public:
     virtual ~JointStatePublisher()
     {
         cleanup();
+        std::cout << "Publisher cleanup completed." << std::endl;
     }
 
-    bool init(const std::vector<std::string>& joint_names)
+    bool init(const std::vector<std::string>& joint_names, int domain_id = 0)
     {
         DomainParticipantQos participantQos;
         participantQos.name("Participant_publisher");
-        participant_ = DomainParticipantFactory::get_instance()->create_participant(42, participantQos);
+        participant_ = DomainParticipantFactory::get_instance()->create_participant(domain_id, participantQos);
         if (participant_ == nullptr) {
             std::cerr << "Failed to create participant" << std::endl;
             return false;
@@ -175,52 +198,27 @@ public:
 int main(int argc, char** argv)
 {
     std::signal(SIGINT, sigint_handler);
-
+    
     char device_path[256];
-    snprintf(device_path, sizeof(device_path), 
-             "/proc/xenomai/registry/rtipc/xddp/%s", XDDP_PORT_LABEL);
-    
-    // Wait for device with timeout
-    int xddp_fd = -1;
-    int retry_count = 0;
-    const int max_retries = 50;
-    
-    std::cout << "Waiting for Xenomai RT server..." << std::endl;
-    
-    while (xddp_fd < 0 && retry_count < max_retries && running) {
-        xddp_fd = open(device_path, O_RDONLY);
-        if (xddp_fd < 0) {
-            if (errno == ENOENT) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                retry_count++;
-            } else {
-                std::cerr << "Failed to open XDDP device: " << strerror(errno) << std::endl;
-                return 1;
-            }
-        }
-    }
-    
-    if (xddp_fd < 0) {
-        std::cerr << "Timeout waiting for XDDP device" << std::endl;
-        return 1;
-    }
-    
-    std::cout << "Connected to XDDP device!" << std::endl;
+    snprintf(device_path, sizeof(device_path), "/proc/xenomai/registry/rtipc/xddp/%s", XDDP_PORT_LABEL);
+    int xddp_fd = open_xddp_device(device_path);
+    if (xddp_fd < 0) return 1;
 
-    JointStatePublisher* pub = new JointStatePublisher();
-    if (!pub->init(robot.joint_names)) {
+    std::vector<std::string> joint_names_vec(
+        spot.joint_names, spot.joint_names + SpotRobot::dofs
+    );
+
+    JointStatePublisher pub;
+    if (!pub.init(joint_names_vec, 42)) {
         std::cerr << "Failed to initialize publisher\n";
         close(xddp_fd);
         return 1;
     }
     
-    struct rt_joint_state_msg msg;
-    std::vector<double> positions(N_JOINTS);
-    std::vector<double> velocities(N_JOINTS);
+    SpotJointStateMsg msg;
+    std::vector<double> positions(SpotRobot::dofs);
+    std::vector<double> velocities(SpotRobot::dofs);
     
-    uint64_t last_seq = 0;
-    auto last_print = std::chrono::steady_clock::now();
-
     std::cout << "Publishing joint states..." << std::endl;
 
     while (running)
@@ -228,33 +226,23 @@ int main(int argc, char** argv)
         int ret = read(xddp_fd, &msg, sizeof(msg));
         if (ret <= 0) {
             if (errno == EINTR) continue;
-            std::cerr << "XDDP read error: " << strerror(errno) << std::endl;
-            break;
+
+            close(xddp_fd);
+            xddp_fd = open_xddp_device(device_path);
+            if (xddp_fd < 0) {
+                break;
+            }
+            continue;
         }
 
-        // Check for dropped messages
-        if (msg.seq != last_seq + 1 && last_seq != 0) {
-            std::cerr << "Dropped " << (msg.seq - last_seq - 1) 
-                      << " messages" << std::endl;
-        }
-        last_seq = msg.seq;
-
-        // Periodic status
-        auto now = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_print).count() >= 2) {
-            std::cout << "seq=" << msg.seq << " publishing OK" << std::endl;
-            last_print = now;
-        }
-
-        for (int i = 0; i < N_JOINTS; ++i) {
+        for (int i = 0; i < SpotRobot::dofs; ++i) {
             positions[i] = msg.positions[i];
             velocities[i] = msg.velocities[i];
         }
 
-        pub->publish(positions, velocities, msg.timestamp_ns);
+        pub.publish(positions, velocities, msg.timestamp_ns);
     }
 
     close(xddp_fd);
-    delete pub;
     return 0;
 }

@@ -14,6 +14,7 @@ target_link_libraries(JointStatePublisher
     fastcdr
 )
 
+#[===[
 add_executable(JointStateSubscriber
     JointStateSubscriber.cpp
     ${DDS_GENERATED_SOURCES}
@@ -24,5 +25,10 @@ target_link_libraries(JointStateSubscriber
 )
 
 install(TARGETS JointStatePublisher JointStateSubscriber
+    RUNTIME DESTINATION bin
+)
+]===]
+
+install(TARGETS JointStatePublisher
     RUNTIME DESTINATION bin
 )

@@ -7,7 +7,7 @@ void* server(void* arg) {
     int iddp_s = create_rt_socket(IDDP_PORT_LABEL, is_iddp, RtSocketRole::Server);
     int xddp_s = create_rt_socket(XDDP_PORT_LABEL, !is_iddp, RtSocketRole::Server);
 
-    struct rt_joint_state_msg msg;
+    SpotJointStateMsg msg;
     for(;;) {
         if (recv(iddp_s, &msg, sizeof(msg), 0) <= 0)
             error_handler("server recv");

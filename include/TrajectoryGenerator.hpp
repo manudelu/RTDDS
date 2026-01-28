@@ -1,79 +1,45 @@
 #pragma once
-#include <vector>
-#include <string>
-#include <memory>
-#include <algorithm>
-#include <stdexcept>
 
-#include "TrajectoryTypes.hpp"
+#include <cstddef>
 #include "RobotModel.hpp"
 
-enum class TrajectoryType 
-{
-    Cubic,
-    Quintic
-};
-
+template <typename Traj, size_t MAX_DOFS>
 class TrajectoryGenerator
 {
+    static_assert(MAX_DOFS > 0, "MAX_DOFS must be positive");
+    
 public:
-    TrajectoryGenerator(const RobotModel& robot,
-                        const std::vector<double>& goal,
-                        double duration,
-                        TrajectoryType type)
+    TrajectoryGenerator(const RobotModel<MAX_DOFS>& robot,
+                        const double goal[MAX_DOFS],
+                        double duration)
         : robot_{robot}, T_{duration}
     {
-        robot_.validate();
+        for (size_t i {0}; i < MAX_DOFS; ++i) {
+            double q0 = robot_.home_position[i];
+            double qf = clamp(goal[i], robot_.joint_min[i], robot_.joint_max[i]);
 
-        if (goal.size() != robot_.dofs())
-            throw std::runtime_error("Robot DOFs mismatch with N_JOINTS");
-
-        trajectories_.reserve(robot_.dofs());
-
-        for (size_t i {0}; i < robot_.dofs(); ++i)
-        {
-            double q0 { robot_.home_position[i] };
-            double qf { clamp(goal[i], robot_.joint_min[i], robot_.joint_max[i]) };
-
-            switch (type)
-            {
-            case TrajectoryType::Cubic:
-                trajectories_.push_back(std::unique_ptr<Trajectory1D>(new Cubic(q0, qf, 0.0, 0.0, T_)));
-                break;
-
-            case TrajectoryType::Quintic:
-                trajectories_.push_back(std::unique_ptr<Trajectory1D>(new Quintic(q0, qf, 0.0, 0.0, 0.0, 0.0, T_)));
-                break;
-            }
+            trajectories_[i] = Traj(q0, qf, T_);
         }
     }
 
-    void compute(double t, std::vector<double>& pos, std::vector<double>& vel) const
+    void compute(double t, double pos[MAX_DOFS], double vel[MAX_DOFS]) const
     {
-        double tc { std::min(t, T_) };
+        const double tc = (t < T_) ? t : T_;
 
-        pos.resize(trajectories_.size());
-        vel.resize(trajectories_.size());
-
-        for (size_t i {0}; i < trajectories_.size(); ++i)
+        for (size_t i {0}; i < MAX_DOFS; ++i)
         {
-            pos[i] = trajectories_[i]->position(tc);
-            vel[i] = trajectories_[i]->velocity(tc);
+            pos[i] = trajectories_[i].position(tc);
+            vel[i] = trajectories_[i].velocity(tc);
         }
-    }
-
-    const std::vector<std::string>& joint_names() const
-    {
-        return robot_.joint_names;
     }
 
 private:
-    static double clamp(double v, double lo, double hi)
+    static double clamp(double q, double low, double high)
     {
-        return std::max(lo, std::min(hi, v));
+        return (q < low) ? low : ((q > high) ? high : q);
     }
 
-    RobotModel robot_;
+    const RobotModel<MAX_DOFS>& robot_;
     double T_;
-    std::vector<std::unique_ptr<Trajectory1D>> trajectories_;
+    Traj trajectories_[MAX_DOFS];
 };
