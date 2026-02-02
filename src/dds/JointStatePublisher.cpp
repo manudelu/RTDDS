@@ -1,6 +1,7 @@
 #include "sensor_msgs/msg/JointStatePubSubTypes.hpp"
 #include "JointStateMsg.hpp"
 #include "RobotModel.hpp"
+#include "XddpReader.hpp"
 
 #include <fastdds/dds/domain/DomainParticipant.hpp>
 #include <fastdds/dds/domain/DomainParticipantFactory.hpp>
@@ -16,10 +17,6 @@
 #include <thread>
 #include <atomic>
 #include <csignal>
-#include <fcntl.h>
-#include <unistd.h>
-#include <cstring>
-#include <cerrno>
 
 #define XDDP_PORT_LABEL "xddp-joint-state"
 
@@ -30,29 +27,6 @@ std::atomic<bool> running {true};
 void sigint_handler(int)
 {
     running = false;
-}
-
-int open_xddp_device(const char* device_path) {
-    int xddp_fd = -1;
-    std::cout << "Waiting for Xenomai RT server..." << std::endl;
-
-    while (running) {
-        xddp_fd = open(device_path, O_RDONLY);
-        if (xddp_fd >= 0) break;
-
-        if (errno == ENOENT) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        } else if (errno != EINTR) {
-            std::cerr << "Failed to open XDDP device: " << strerror(errno) << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(1)); 
-        }
-    }
-
-    if (xddp_fd >= 0) {
-        std::cout << "Connected to XDDP device!" << std::endl;
-    }
-
-    return xddp_fd;
 }
 
 class JointStatePublisher
@@ -168,6 +142,7 @@ public:
             return false;
         }
 
+        // Pre-allocate all vectors during initialization
         joint_state_.name() = joint_names;
         joint_state_.position().resize(joint_names.size(), 0.0);
         joint_state_.velocity().resize(joint_names.size(), 0.0);
@@ -179,17 +154,18 @@ public:
 
     void publish(const std::vector<double>& positions, 
                  const std::vector<double>& velocities,
+                 const std::vector<double>& efforts,
                  uint64_t rt_timestamp_ns)
     {
         if (listener_.get_matched() <= 0)
             return;
 
-        joint_state_.position() = positions;
-        joint_state_.velocity() = velocities;
-
-        // Use RT timestamp
+        // JointStateMsg
         joint_state_.header().stamp().sec() = rt_timestamp_ns / 1000000000ULL;
         joint_state_.header().stamp().nanosec() = rt_timestamp_ns % 1000000000ULL;
+        joint_state_.position() = positions;
+        joint_state_.velocity() = velocities;
+        joint_state_.effort() = efforts;
 
         writer_->write(&joint_state_);
     }
@@ -198,51 +174,37 @@ public:
 int main(int argc, char** argv)
 {
     std::signal(SIGINT, sigint_handler);
-    
-    char device_path[256];
-    snprintf(device_path, sizeof(device_path), "/proc/xenomai/registry/rtipc/xddp/%s", XDDP_PORT_LABEL);
-    int xddp_fd = open_xddp_device(device_path);
-    if (xddp_fd < 0) return 1;
 
-    std::vector<std::string> joint_names_vec(
-        spot.joint_names, spot.joint_names + SpotRobot::dofs
-    );
+    XddpReader<SpotJointStateMsg> xddp(XDDP_PORT_LABEL);
+    if (!xddp.connect(running))
+        return 1;
 
+    std::vector<std::string> joint_names(spot.joint_names, spot.joint_names + SpotRobot::dofs);
     JointStatePublisher pub;
-    if (!pub.init(joint_names_vec, 42)) {
+    if (!pub.init(joint_names, 42)) {
         std::cerr << "Failed to initialize publisher\n";
-        close(xddp_fd);
         return 1;
     }
-    
+
     SpotJointStateMsg msg;
     std::vector<double> positions(SpotRobot::dofs);
     std::vector<double> velocities(SpotRobot::dofs);
-    
+    std::vector<double> efforts(SpotRobot::dofs);
+
     std::cout << "Publishing joint states..." << std::endl;
 
-    while (running)
-    {
-        int ret = read(xddp_fd, &msg, sizeof(msg));
-        if (ret <= 0) {
-            if (errno == EINTR) continue;
-
-            close(xddp_fd);
-            xddp_fd = open_xddp_device(device_path);
-            if (xddp_fd < 0) {
-                break;
-            }
+    while (running) {
+        if (!xddp.read(msg))
             continue;
-        }
 
         for (int i = 0; i < SpotRobot::dofs; ++i) {
-            positions[i] = msg.positions[i];
+            positions[i]  = msg.positions[i];
             velocities[i] = msg.velocities[i];
+            efforts[i]    = msg.efforts[i];
         }
 
-        pub.publish(positions, velocities, msg.timestamp_ns);
+        pub.publish(positions, velocities, efforts, msg.timestamp_ns);
     }
 
-    close(xddp_fd);
     return 0;
 }

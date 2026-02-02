@@ -41,7 +41,7 @@ void* client(void* arg) {
         traj_gen.compute(t, pos, vel);
 
         for (int i = 0; i < MAX_DOFS; ++i) {
-            msg.positions[i] = pos[i];
+            msg.positions[i]  = pos[i];
             msg.velocities[i] = vel[i];
             msg.efforts[i]    = 0.0;
         }

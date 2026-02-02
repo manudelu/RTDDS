@@ -1,6 +1,7 @@
 #include "rt_sockets.hpp"
 #include <pthread.h>
 #include <signal.h>
+#include <iostream>
 
 extern void* client(void*);
 extern void* server(void*);
@@ -15,6 +16,7 @@ struct ThreadInfo {
 };
 
 int main() {
+    // Block signals for main thread
     sigset_t set;
     sigemptyset(&set);
     sigaddset(&set, SIGINT);
@@ -27,6 +29,7 @@ int main() {
         { client, SCHED_FIFO, 70 },
     };
 
+    // Create RT threads
     for(int i=0; i<NUM_THREADS; ++i) {
         pthread_attr_t attr;
         pthread_attr_init(&attr);
@@ -39,12 +42,19 @@ int main() {
             error_handler("pthread_create");
     }
 
+    std::cout << "RT threads started. Press Ctrl+C to stop." << std::endl;
+
+    // Wait for signal
     int sig;
     __STD(sigwait(&set, &sig));
 
+    std::cout << "\nShutting down..." << std::endl;
+
+    // Cancel RT threads
     for(int i=0; i<NUM_THREADS; ++i)
         pthread_cancel(threads[i]);
 
+    // Wait for threads to finish
     for(int i=0; i<NUM_THREADS; ++i)
         pthread_join(threads[i], nullptr);
 
